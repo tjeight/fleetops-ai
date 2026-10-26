@@ -1,0 +1,86 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fleetops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fleetops}
+      POSTGRES_USER: ${POSTGRES_USER:-fleetops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fleetops_dev_password}
+    ports:
+      # Expose on host port 5434 to avoid port conflicts with any existing system PostgreSQL
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - fleetops_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fleetops} -d ${POSTGRES_DB:-fleetops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fleetops-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fleetops-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fleetops}:${POSTGRES_PASSWORD:-fleetops_dev_password}@postgres:5432/${POSTGRES_DB:-fleetops}
+      CHROMA_PERSIST_DIRECTORY: /app/chroma_data
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - fleetops_chroma_data:/app/chroma_data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - fleetops-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+    container_name: fleetops-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+    networks:
+      - fleetops-network
+
+volumes:
+  fleetops_postgres_data:
+    name: fleetops_postgres_data
+  fleetops_chroma_data:
+    name: fleetops_chroma_data
+
+networks:
+  fleetops-network:
+    name: fleetops-network
+    driver: bridge
